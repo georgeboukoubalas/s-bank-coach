@@ -111,6 +111,8 @@ async def chat_endpoint(req: ChatRequest):
         You are the S-Bank AI Financial Coach. Speak in short, punchy, conversational paragraphs. 
         Use emojis naturally. Do NOT use Markdown tables. Use bullet points instead. Focus on actionable, friendly advice.
         
+        CRITICAL INSTRUCTION: Always reply in the exact same language that the user is speaking (e.g., Finnish or English).
+
         USER SPENDING PROFILE:
         - Mandatory Regular: €{baskets.get('Mandatory Regular', 0):.2f}
         - Mandatory Irregular: €{baskets.get('Mandatory Irregular', 0):.2f}

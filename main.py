@@ -7,6 +7,15 @@ import openai
 import os
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+from typing import List
+
+class ChatMessage(BaseModel):
+    role: str      # "user" or "assistant"
+    content: str   # The text of the message
+
+class ChatRequest(BaseModel):
+    customer_id: str
+    conversation: List[ChatMessage]  # The frontend sends the whole history
 
 # 1. Setup API Keys
 load_dotenv()
@@ -44,10 +53,6 @@ try:
     print("Models and Data loaded into memory.")
 except Exception as e:
     print(f"Startup warning: {e}")
-
-class ChatRequest(BaseModel):
-    customer_id: str
-    message: str
 
 def get_user_baskets(customer_id: str):
     """Filters the user's data, runs it through KNN, and sums up the baskets."""
@@ -94,39 +99,46 @@ def get_financial_twin_benchmark(customer_id: str, user_total_spend: float):
 
 @app.post("/chat")
 async def chat_endpoint(req: ChatRequest):
-    baskets = get_user_baskets(req.customer_id)
-    if not baskets:
-        raise HTTPException(status_code=404, detail="Customer not found")
+        baskets = get_user_baskets(req.customer_id)
+        if not baskets:
+            raise HTTPException(status_code=404, detail="Customer not found")
+            
+        total_spend = sum(baskets.values())
+        benchmark_insight = get_financial_twin_benchmark(req.customer_id, total_spend)
         
-    total_spend = sum(baskets.values())
-    
-    # Run the Twin Benchmark
-    benchmark_insight = get_financial_twin_benchmark(req.customer_id, total_spend)
-    
-    system_prompt = f"""
-    You are the S-Bank AI Financial Coach. You speak in plain, friendly language.
-    
-    USER SPENDING PROFILE:
-    - Mandatory Regular: €{baskets.get('Mandatory Regular', 0):.2f}
-    - Mandatory Irregular: €{baskets.get('Mandatory Irregular', 0):.2f}
-    - Everyday Spending: €{baskets.get('Everyday', 0):.2f}
-    
-    PEER BENCHMARKING (Financial Twin AI):
-    {benchmark_insight}
-    
-    Use this benchmark data to motivate the user. If they spend less than their peers, congratulate them. If they spend more, gently encourage them to look at their 'Everyday Spending'.
-    """
-    
-    response = client.chat.completions.create(
-        model="openai/gpt-oss-20b", 
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": req.message}
-        ]
-    )
-    
-    return {
-        "reply": response.choices[0].message.content,
-        "data_context": baskets,
-        "benchmark": benchmark_insight # Send to React so they can show a cool badge!
-    }
+        # Updated system prompt to forbid Markdown tables and encourage natural chat
+        system_prompt = f"""
+        You are the S-Bank AI Financial Coach. Speak in short, punchy, conversational paragraphs. 
+        Use emojis naturally. Do NOT use Markdown tables. Use bullet points instead. Focus on actionable, friendly advice.
+        
+        USER SPENDING PROFILE:
+        - Mandatory Regular: €{baskets.get('Mandatory Regular', 0):.2f}
+        - Mandatory Irregular: €{baskets.get('Mandatory Irregular', 0):.2f}
+        - Everyday Spending: €{baskets.get('Everyday', 0):.2f}
+        
+        PEER BENCHMARKING:
+        {benchmark_insight}
+        """
+        
+        # --- NEW CODE GOES HERE ---
+        
+        # 1. Create the system prompt message
+        messages_for_llm = [{"role": "system", "content": system_prompt}]
+
+        # 2. Add the entire conversation history sent by the frontend
+        for msg in req.conversation:
+            messages_for_llm.append({"role": msg.role, "content": msg.content})
+
+        # 3. Send it all to Groq
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-20b", 
+            messages=messages_for_llm
+        )
+        
+        # --------------------------
+        
+        return {
+            "reply": response.choices[0].message.content,
+            "data_context": baskets,
+            "benchmark": benchmark_insight
+        }

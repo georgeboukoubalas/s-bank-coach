@@ -33,15 +33,14 @@ print("Booting up AI Coach Backend...")
 try:
     basket_model = joblib.load("basket_classifier.pkl")
     
-    # Load the Twin bundle (Model, Scaler, and User Database)
     twin_bundle = joblib.load("financial_twin.pkl")
     twin_model = twin_bundle['model']
     twin_scaler = twin_bundle['scaler']
     twin_db = twin_bundle['user_data']
     
-    from data_loader import load_and_merge_data, extract_features_for_baskets
-    master_data = load_and_merge_data()
-    all_user_features = extract_features_for_baskets(master_data)
+    # NEW CODE: Just load the pre-calculated features!
+    all_user_features = joblib.load("user_features.pkl")
+    
     print("Models and Data loaded into memory.")
 except Exception as e:
     print(f"Startup warning: {e}")

@@ -1,0 +1,133 @@
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import joblib
+import pandas as pd
+import numpy as np
+import openai
+import os
+from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
+
+# 1. Setup API Keys
+load_dotenv()
+
+# Initialize the Groq client
+client = openai.OpenAI(
+    api_key=os.getenv("GROQ_API_KEY"),
+    base_url="https://api.groq.com/openai/v1"
+)
+
+app = FastAPI()
+
+# Add this immediately after creating the app
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins (perfect for hackathons)
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allows all headers
+)
+
+# 2. Load BOTH ML Models at startup
+print("Booting up AI Coach Backend...")
+try:
+    basket_model = joblib.load("basket_classifier.pkl")
+    
+    # Load the Twin bundle (Model, Scaler, and User Database)
+    twin_bundle = joblib.load("financial_twin.pkl")
+    twin_model = twin_bundle['model']
+    twin_scaler = twin_bundle['scaler']
+    twin_db = twin_bundle['user_data']
+    
+    from data_loader import load_and_merge_data, extract_features_for_baskets
+    master_data = load_and_merge_data()
+    all_user_features = extract_features_for_baskets(master_data)
+    print("Models and Data loaded into memory.")
+except Exception as e:
+    print(f"Startup warning: {e}")
+
+class ChatRequest(BaseModel):
+    customer_id: str
+    message: str
+
+def get_user_baskets(customer_id: str):
+    """Filters the user's data, runs it through KNN, and sums up the baskets."""
+    user_data = all_user_features[all_user_features['customer_id'] == customer_id].copy()
+    
+    if user_data.empty:
+        return None
+        
+    X_user = user_data[['tx_count', 'avg_amount_abs', 'std_amount', 'max_amount_abs', 'cv_amount']]
+    user_data['predicted_basket'] = basket_model.predict(X_user)
+    user_data['total_spend'] = user_data['tx_count'] * user_data['avg_amount_abs']
+    
+    basket_totals = user_data.groupby('predicted_basket')['total_spend'].sum().to_dict()
+    return basket_totals
+
+# ... [Keep ChatRequest and get_user_baskets classes here] ...
+
+def get_financial_twin_benchmark(customer_id: str, user_total_spend: float):
+    """Finds the 5 most similar users and calculates their average spend."""
+    user_row = twin_db[twin_db['customer_id'] == customer_id]
+    if user_row.empty:
+        return "No benchmark available."
+        
+    # Get the user's raw features and scale them
+    X_user = user_row[['age', 'total_volume', 'total_transactions']]
+    X_user_scaled = twin_scaler.transform(X_user)
+    
+    # Find the 6 closest people (Index 0 is the user, 1-5 are the twins)
+    distances, indices = twin_model.kneighbors(X_user_scaled)
+    
+    # Get the twins' data
+    twin_indices = indices[0][1:] # Skip the first one
+    twins = twin_db.iloc[twin_indices]
+    
+    twin_avg_spend = twins['total_volume'].mean()
+    
+    # Calculate the difference
+    diff_percent = ((user_total_spend - twin_avg_spend) / twin_avg_spend) * 100
+    
+    if diff_percent > 0:
+        return f"The user spends {abs(diff_percent):.1f}% MORE than their 5 closest demographic twins (Avg twin spend: €{twin_avg_spend:.2f})."
+    else:
+        return f"The user spends {abs(diff_percent):.1f}% LESS than their 5 closest demographic twins (Avg twin spend: €{twin_avg_spend:.2f})."
+
+@app.post("/chat")
+async def chat_endpoint(req: ChatRequest):
+    baskets = get_user_baskets(req.customer_id)
+    if not baskets:
+        raise HTTPException(status_code=404, detail="Customer not found")
+        
+    total_spend = sum(baskets.values())
+    
+    # Run the Twin Benchmark
+    benchmark_insight = get_financial_twin_benchmark(req.customer_id, total_spend)
+    
+    system_prompt = f"""
+    You are the S-Bank AI Financial Coach. You speak in plain, friendly language.
+    
+    USER SPENDING PROFILE:
+    - Mandatory Regular: €{baskets.get('Mandatory Regular', 0):.2f}
+    - Mandatory Irregular: €{baskets.get('Mandatory Irregular', 0):.2f}
+    - Everyday Spending: €{baskets.get('Everyday', 0):.2f}
+    
+    PEER BENCHMARKING (Financial Twin AI):
+    {benchmark_insight}
+    
+    Use this benchmark data to motivate the user. If they spend less than their peers, congratulate them. If they spend more, gently encourage them to look at their 'Everyday Spending'.
+    """
+    
+    response = client.chat.completions.create(
+        model="openai/gpt-oss-20b", 
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": req.message}
+        ]
+    )
+    
+    return {
+        "reply": response.choices[0].message.content,
+        "data_context": baskets,
+        "benchmark": benchmark_insight # Send to React so they can show a cool badge!
+    }

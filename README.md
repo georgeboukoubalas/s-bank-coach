@@ -62,6 +62,7 @@ The frontend (React/Vercel) and backend (FastAPI/Render) are fully
 decoupled. The frontend communicates with this backend via a single REST
 endpoint.
 
+-  **GitHub link** `https://github.com/TechieTad/s-coach-frontend/tree/main`
 -   **Endpoint:** `POST /chat`
 -   **Content-Type:** `application/json`
 
